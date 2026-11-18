@@ -155,6 +155,52 @@ jobs:
           & (Join-Path $app 'ffmpeg\bin\ffmpeg.exe') -version
           if ($LASTEXITCODE -ne 0) { throw "Packaged FFmpeg smoke test failed." }
 
+      - name: Smoke-test bundled VLC engine and video decoding
+        shell: pwsh
+        run: |
+          $app = Join-Path $env:GITHUB_WORKSPACE 'dist\\SmartVideoDownloader'
+          $vlcDir = Join-Path $app 'vlc'
+          $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\\vendor\\curlcffi;$env:GITHUB_WORKSPACE\\vendor\\yt-dlp-source"
+          $env:PYTHON_VLC_LIB_PATH = Join-Path $vlcDir 'libvlc.dll'
+          $env:VLC_PLUGIN_PATH = Join-Path $vlcDir 'plugins'
+          $env:PATH = "$vlcDir;$env:PATH"
+          $testVideo = Join-Path $env:RUNNER_TEMP 'vlc-smoke-test.mp4'
+          & (Join-Path $app 'ffmpeg\\bin\\ffmpeg.exe') -hide_banner -loglevel error -f lavfi -i 'color=c=blue:s=160x90:r=10' -t 2 -an -c:v mpeg4 -y $testVideo
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $testVideo)) { throw "Could not create VLC smoke-test video." }
+          @'
+          import os, sys, time, vlc
+          video = os.path.join(os.environ["RUNNER_TEMP"], "vlc-smoke-test.mp4")
+          instance = vlc.Instance("--intf=dummy", "--no-video-title-show", "--avcodec-hw=none", "--vout=dummy", "--aout=dummy")
+          if instance is None:
+              raise SystemExit("VLC instance creation failed")
+          player = instance.media_player_new()
+          if player is None:
+              raise SystemExit("VLC media player creation failed")
+          media = instance.media_new_path(video)
+          if media is None:
+              raise SystemExit("VLC media creation failed")
+          player.set_media(media)
+          result = player.play()
+          if result == -1:
+              raise SystemExit("VLC playback start failed")
+          deadline = time.time() + 12
+          while time.time() < deadline:
+              state = player.get_state()
+              if state == vlc.State.Ended:
+                  print("VLC decoded and played the test video successfully.")
+                  break
+              if state == vlc.State.Error:
+                  raise SystemExit("VLC reported a playback error")
+              time.sleep(0.2)
+          else:
+              raise SystemExit("VLC playback did not finish within 12 seconds")
+          player.stop()
+          player.release()
+          media.release()
+          instance.release()
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw "Bundled VLC engine/playback smoke test failed." }
+
       - name: Audit portable folder size before upload
         shell: pwsh
         run: |
