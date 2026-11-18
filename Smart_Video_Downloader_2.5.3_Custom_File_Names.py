@@ -99,6 +99,7 @@ class VideoDownloader:
         self.queue_counter = 0
         self.queue_running = False
         self.pending_custom_filename = None
+        self.pending_custom_filename_url = None
         self.queue_success_count = 0
         self.queue_error_count = 0
         self.queue_current_id = None
@@ -2991,6 +2992,8 @@ class VideoDownloader:
 
         self.current_url = ""
         self.pending_url = ""
+        self.pending_custom_filename = None
+        self.pending_custom_filename_url = None
         self.info_data = None
         self.last_clipboard_text = ""
 
@@ -3558,12 +3561,13 @@ class VideoDownloader:
             return
         url = self.url_entry.get().strip()
         added = self.add_queue_urls(url.splitlines())
-        if added and self.pending_custom_filename:
+        if added and self.pending_custom_filename and self.pending_custom_filename_url == url:
             for item in reversed(self.download_queue):
                 if item.get("url") in [part.strip() for part in url.splitlines() if part.strip()]:
                     item["custom_filename"] = self.pending_custom_filename
                     break
             self.pending_custom_filename = None
+            self.pending_custom_filename_url = None
             self.refresh_queue_view()
         if not added:
             messagebox.showwarning("تنبيه", "أدخل رابطاً صحيحاً أولاً.")
@@ -3734,7 +3738,15 @@ class VideoDownloader:
             # تسهيل الاستخدام: إذا لم تتم إضافة عناصر يدوياً، أضف الرابط الموجود بالأعلى.
             url = self.url_entry.get().strip()
             if url:
-                self.add_queue_urls(url.splitlines())
+                added = self.add_queue_urls(url.splitlines())
+                if added and self.pending_custom_filename and self.pending_custom_filename_url == url:
+                    for item in reversed(self.download_queue):
+                        if item.get("url") == url:
+                            item["custom_filename"] = self.pending_custom_filename
+                            break
+                    self.pending_custom_filename = None
+                    self.pending_custom_filename_url = None
+                    self.refresh_queue_view()
         if not self.download_queue:
             messagebox.showwarning("قائمة الانتظار فارغة", "أضف رابطاً واحداً على الأقل قبل بدء التحميل.")
             return
@@ -3787,12 +3799,13 @@ class VideoDownloader:
         url = self.url_entry.get().strip()
         if url:
             added = self.add_queue_urls(url.splitlines())
-            if added and self.pending_custom_filename:
+            if added and self.pending_custom_filename and self.pending_custom_filename_url == url:
                 for item in reversed(self.download_queue):
                     if item.get("url") in [part.strip() for part in url.splitlines() if part.strip()]:
                         item["custom_filename"] = self.pending_custom_filename
                         break
                 self.pending_custom_filename = None
+                self.pending_custom_filename_url = None
                 self.refresh_queue_view()
         self.start_queue_download()
 
@@ -4017,6 +4030,7 @@ class VideoDownloader:
             return
         try:
             self.pending_custom_filename = self.sanitize_custom_filename(value)
+            self.pending_custom_filename_url = url
         except ValueError as exc:
             messagebox.showwarning("اسم غير صالح", str(exc))
             return
