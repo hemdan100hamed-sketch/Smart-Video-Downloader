@@ -1,1 +1,4 @@
 PyInstaller==5.13.2
+Pillow==10.4.0
+python-vlc==3.0.21203
+tkinterdnd2==0.4.2
