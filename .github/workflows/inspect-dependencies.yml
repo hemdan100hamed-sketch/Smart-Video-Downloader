@@ -3,7 +3,7 @@ name: Inspect dependencies and build portable app
 on:
   push:
     branches:
-      - build/windows7-11-packaging
+      - experiment/vlc-size-optimization
     paths:
       - SmartVideo_Dependencies.rar
       - .github/workflows/inspect-dependencies.yml
@@ -21,7 +21,7 @@ jobs:
       - name: Check out packaging branch
         uses: actions/checkout@v4
         with:
-          ref: build/windows7-11-packaging
+          ref: experiment/vlc-size-optimization
 
       - name: Install 7-Zip
         shell: pwsh
@@ -74,6 +74,20 @@ jobs:
           Get-ChildItem -LiteralPath $vlcRoot.FullName -Force | Copy-Item -Destination $vlcTarget -Recurse -Force
           if (!(Test-Path (Join-Path $vlcTarget 'libvlc.dll')) -or !(Test-Path (Join-Path $vlcTarget 'plugins'))) {
             throw "VLC runtime was not staged in the expected folder."
+          }
+
+      - name: Trim VLC GUI-only plugins for experimental size build
+        shell: pwsh
+        run: |
+          $plugins = Join-Path $env:GITHUB_WORKSPACE 'vendor\\vlc\\plugins'
+          $gui = Join-Path $plugins 'gui'
+          if (Test-Path $gui) {
+            $before = (Get-ChildItem -LiteralPath $gui -File -Recurse | Measure-Object -Property Length -Sum).Sum
+            Remove-Item -LiteralPath $gui -Recurse -Force
+            Write-Host ("Removed VLC GUI-only plugin group: {0:N2} MiB" -f ($before / 1MB))
+          }
+          if (!(Test-Path (Join-Path $plugins 'codec')) -or !(Test-Path (Join-Path $plugins 'demux'))) {
+            throw "Required VLC codec/demux plugin groups are missing."
           }
 
       - name: Download and stage Windows 7-compatible FFmpeg 4.4.1 from GitHub Release
@@ -169,6 +183,6 @@ jobs:
       - name: Upload portable application
         uses: actions/upload-artifact@v4
         with:
-          name: SmartVideoDownloader-2.5.3-Windows-Portable-Full-Features
+          name: SmartVideoDownloader-2.5.3-Windows-Portable-VLC-Optimized-Experimental
           path: dist/SmartVideoDownloader/
           if-no-files-found: error
