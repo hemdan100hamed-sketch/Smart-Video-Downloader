@@ -12,7 +12,7 @@ permissions:
 jobs:
   mpv-smoke-test:
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out isolated MPV experiment
         uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
           "MPV_DLL_DIR=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host ("Bundled MPV DLL payload: {0:N2} MiB" -f ($total / 1MB))
           Get-ChildItem $target -File | Select-Object Name,Length | Format-Table -AutoSize
-      - name: Download a small MP4 test clip
+      - name: Download a small local MP4 test clip
         shell: pwsh
         run: |
           $video = Join-Path $env:RUNNER_TEMP 'mpv-test.mp4'
@@ -49,8 +49,18 @@ jobs:
           if (!(Test-Path $video) -or (Get-Item $video).Length -lt 10000) { throw 'Test clip download failed or file is too small.' }
           "MPV_TEST_VIDEO=$video" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host ("Downloaded test clip: {0:N2} MiB" -f ((Get-Item $video).Length / 1MB))
-      - name: Test embedded playback and controls inside Tkinter
+      - name: Test local embedded playback and controls
         shell: pwsh
         run: |
-          python experiments\mpv_probe.py "$env:MPV_TEST_VIDEO"
-          if ($LASTEXITCODE -ne 0) { throw 'MPV embedded playback test failed.' }
+          python experiments\mpv_probe.py --local "$env:MPV_TEST_VIDEO"
+          if ($LASTEXITCODE -ne 0) { throw 'MPV local embedded playback test failed.' }
+      - name: Test direct HTTPS network playback
+        shell: pwsh
+        run: |
+          python experiments\mpv_probe.py --network "https://download.samplelib.com/mp4/sample-5s.mp4"
+          if ($LASTEXITCODE -ne 0) { throw 'MPV direct HTTPS playback test failed.' }
+      - name: Test HLS network streaming
+        shell: pwsh
+        run: |
+          python experiments\mpv_probe.py --network "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+          if ($LASTEXITCODE -ne 0) { throw 'MPV HLS streaming test failed.' }
