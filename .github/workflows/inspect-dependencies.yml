@@ -112,6 +112,9 @@ jobs:
           python -m py_compile build\Smart_Video_Downloader_2.5.3_Windows.py
           if ($LASTEXITCODE -ne 0) { throw "Prepared application source has a syntax error." }
           $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\vendor\yt-dlp-source;$env:GITHUB_WORKSPACE\vendor\curlcffi"
+          $env:PYTHON_VLC_LIB_PATH = (Resolve-Path 'vendor\vlc\libvlc.dll').Path
+          $env:VLC_PLUGIN_PATH = (Resolve-Path 'vendor\vlc\plugins').Path
+          $env:PATH = "$(Resolve-Path 'vendor\vlc').Path;$env:PATH"
           python -c "import yt_dlp, curl_cffi, PIL, tkinterdnd2, vlc; print('yt-dlp, curl_cffi, Pillow, tkinterdnd2 and python-vlc imports: OK')"
           if ($LASTEXITCODE -ne 0) { throw "A required Python dependency failed to import." }
           if (!(Test-Path 'vendor\vlc\libvlc.dll')) { throw "VLC runtime DLL missing." }
