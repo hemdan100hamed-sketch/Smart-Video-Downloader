@@ -17,6 +17,7 @@ if not os.path.isdir(vlc_dir):
 
 if os.path.isdir(vlc_dir):
     os.environ["VLC_PLUGIN_PATH"] = os.path.join(vlc_dir, "plugins")
+    os.environ["PYTHON_VLC_LIB_PATH"] = os.path.join(vlc_dir, "libvlc.dll")
     os.environ["PATH"] = vlc_dir + os.pathsep + os.environ.get("PATH", "")
     if hasattr(os, "add_dll_directory"):
         try:
