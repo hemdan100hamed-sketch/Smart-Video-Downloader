@@ -32,7 +32,7 @@ jobs:
           & $sevenZip t "$env:GITHUB_WORKSPACE\SmartVideo_Dependencies.rar"
           if ($LASTEXITCODE -ne 0) { throw "RAR archive integrity test failed." }
 
-      - name: Extract and stage exact vendor folder layout
+      - name: Extract and stage yt-dlp and curl_cffi
         shell: pwsh
         run: |
           $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
@@ -45,17 +45,11 @@ jobs:
           $dependencyRoot = Join-Path $target 'SmartVideo_Dependencies'
           $ytdlpSource = Join-Path $dependencyRoot 'yt_dlp'
           $curlSource = Join-Path $dependencyRoot 'curlcffi-test\installed'
-          if (!(Test-Path (Join-Path $ytdlpSource '__init__.py'))) {
-            throw "yt_dlp package not found in the expected archive layout."
-          }
-          if (!(Test-Path (Join-Path $curlSource 'curl_cffi\__init__.py'))) {
-            throw "curl_cffi package not found in the expected archive layout."
-          }
-          if (!(Test-Path (Join-Path $curlSource '_cffi_backend.cp38-win_amd64.pyd'))) {
-            throw "CPython 3.8 x64 _cffi_backend extension is missing."
-          }
+          if (!(Test-Path (Join-Path $ytdlpSource '__init__.py'))) { throw "yt_dlp package missing." }
+          if (!(Test-Path (Join-Path $curlSource 'curl_cffi\__init__.py'))) { throw "curl_cffi package missing." }
+          if (!(Test-Path (Join-Path $curlSource '_cffi_backend.cp38-win_amd64.pyd'))) { throw "CPython 3.8 x64 _cffi_backend missing." }
           $curlDll = Get-ChildItem (Join-Path $curlSource 'curl_cffi.libs') -Filter 'libcurl*.dll' -File
-          if (!$curlDll) { throw "curl_cffi libcurl DLL is missing." }
+          if (!$curlDll) { throw "curl_cffi libcurl DLL missing." }
 
           $vendorYtdlp = Join-Path $env:GITHUB_WORKSPACE 'vendor\yt-dlp-source'
           $vendorCurl = Join-Path $env:GITHUB_WORKSPACE 'vendor\curlcffi'
@@ -63,9 +57,38 @@ jobs:
           Copy-Item $ytdlpSource (Join-Path $vendorYtdlp 'yt_dlp') -Recurse -Force
           Copy-Item (Join-Path $curlSource '*') $vendorCurl -Recurse -Force
 
-          Write-Host "yt_dlp staged: $(Test-Path (Join-Path $vendorYtdlp 'yt_dlp\__init__.py'))"
-          Write-Host "curl_cffi staged: $(Test-Path (Join-Path $vendorCurl 'curl_cffi\__init__.py'))"
-          Write-Host "libcurl DLL: $($curlDll.FullName)"
+      - name: Download and stage VLC 3.0.21 native runtime
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'vlc-3.0.21-win64.7z'
+          $extract = Join-Path $env:RUNNER_TEMP 'VLC_Runtime'
+          Invoke-WebRequest -Uri 'https://get.videolan.org/vlc/3.0.21/win64/vlc-3.0.21-win64.7z' -OutFile $archive
+          & (Join-Path $env:ProgramFiles '7-Zip\7z.exe') x $archive "-o$extract" -y
+          if ($LASTEXITCODE -ne 0) { throw "VLC archive extraction failed." }
+          $vlcRoot = Get-ChildItem $extract -Directory | Select-Object -First 1
+          if (!$vlcRoot -or !(Test-Path (Join-Path $vlcRoot.FullName 'libvlc.dll')) -or !(Test-Path (Join-Path $vlcRoot.FullName 'plugins'))) {
+            throw "VLC native runtime is incomplete (libvlc.dll/plugins missing)."
+          }
+          Copy-Item $vlcRoot.FullName (Join-Path $env:GITHUB_WORKSPACE 'vendor\vlc') -Recurse -Force
+          if (!(Test-Path (Join-Path $env:GITHUB_WORKSPACE 'vendor\vlc\libvlc.dll'))) {
+            throw "VLC runtime was not staged in the expected folder."
+          }
+
+      - name: Download and stage Windows 7-compatible FFmpeg essentials
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg-4.4.1-essentials_build.7z'
+          $extract = Join-Path $env:RUNNER_TEMP 'FFmpeg_Runtime'
+          Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-4.4.1-essentials_build.7z' -OutFile $archive
+          & (Join-Path $env:ProgramFiles '7-Zip\7z.exe') x $archive "-o$extract" -y
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg archive extraction failed." }
+          $ffmpeg = Get-ChildItem $extract -Filter 'ffmpeg.exe' -Recurse -File | Select-Object -First 1
+          if (!$ffmpeg) { throw "ffmpeg.exe was not found in the downloaded archive." }
+          $ffmpegDir = Join-Path $env:GITHUB_WORKSPACE 'vendor\ffmpeg\bin'
+          New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null
+          Copy-Item $ffmpeg.FullName (Join-Path $ffmpegDir 'ffmpeg.exe') -Force
+          & (Join-Path $ffmpegDir 'ffmpeg.exe') -version
+          if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg failed its startup check." }
 
       - name: Set up 64-bit Python 3.8
         uses: actions/setup-python@v5
@@ -73,7 +96,15 @@ jobs:
           python-version: '3.8'
           architecture: 'x64'
 
-      - name: Prepare application source and verify dependency imports
+      - name: Install pinned application dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade "pip<25"
+          if ($LASTEXITCODE -ne 0) { throw "pip setup failed." }
+          python -m pip install -r packaging\requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
+
+      - name: Prepare application source and verify required imports
         shell: pwsh
         run: |
           python packaging\prepare_windows_build.py
@@ -81,29 +112,35 @@ jobs:
           python -m py_compile build\Smart_Video_Downloader_2.5.3_Windows.py
           if ($LASTEXITCODE -ne 0) { throw "Prepared application source has a syntax error." }
           $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\vendor\yt-dlp-source;$env:GITHUB_WORKSPACE\vendor\curlcffi"
-          python -c "import yt_dlp, curl_cffi; print('yt_dlp:', yt_dlp.version.__version__); print('curl_cffi:', curl_cffi.__version__)"
-          if ($LASTEXITCODE -ne 0) { throw "A required dependency failed to import on Python 3.8 x64." }
+          python -c "import yt_dlp, curl_cffi, PIL, tkinterdnd2, vlc; print('yt-dlp, curl_cffi, Pillow, tkinterdnd2 and python-vlc imports: OK')"
+          if ($LASTEXITCODE -ne 0) { throw "A required Python dependency failed to import." }
+          if (!(Test-Path 'vendor\vlc\libvlc.dll')) { throw "VLC runtime DLL missing." }
+          if (!(Test-Path 'vendor\vlc\plugins')) { throw "VLC plugins missing." }
+          if (!(Test-Path 'vendor\ffmpeg\bin\ffmpeg.exe')) { throw "FFmpeg missing." }
 
-      - name: Install PyInstaller
+      - name: Install PyInstaller build tools
         shell: pwsh
         run: |
-          python -m pip install --upgrade "pip<25"
-          if ($LASTEXITCODE -ne 0) { throw "pip setup failed." }
           python -m pip install -r packaging\requirements-build.txt
-          if ($LASTEXITCODE -ne 0) { throw "PyInstaller installation failed." }
+          if ($LASTEXITCODE -ne 0) { throw "Build dependency installation failed." }
 
       - name: Build portable onedir application
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean packaging\SmartVideoDownloader.spec
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
-          if (!(Test-Path 'dist\SmartVideoDownloader\SmartVideoDownloader.exe')) {
-            throw "Expected portable application EXE was not created."
+          $app = Join-Path $env:GITHUB_WORKSPACE 'dist\SmartVideoDownloader'
+          foreach ($required in @('SmartVideoDownloader.exe','vlc\libvlc.dll','vlc\plugins','ffmpeg\bin\ffmpeg.exe')) {
+            if (!(Test-Path (Join-Path $app $required))) { throw "Portable output missing required component: $required" }
           }
+          $env:PATH = (Join-Path $app 'vlc') + [IO.Path]::PathSeparator + $env:PATH
+          $env:VLC_PLUGIN_PATH = Join-Path $app 'vlc\plugins'
+          & (Join-Path $app 'ffmpeg\bin\ffmpeg.exe') -version
+          if ($LASTEXITCODE -ne 0) { throw "Packaged FFmpeg smoke test failed." }
 
       - name: Upload portable application
         uses: actions/upload-artifact@v4
         with:
-          name: SmartVideoDownloader-2.5.3-Windows-Portable
+          name: SmartVideoDownloader-2.5.3-Windows-Portable-Full-Features
           path: dist/SmartVideoDownloader/
           if-no-files-found: error
