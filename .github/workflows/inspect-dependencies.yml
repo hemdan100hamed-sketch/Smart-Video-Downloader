@@ -62,7 +62,7 @@ jobs:
         run: |
           $archive = Join-Path $env:RUNNER_TEMP 'vlc-3.0.21-win64.7z'
           $extract = Join-Path $env:RUNNER_TEMP 'VLC_Runtime'
-          Invoke-WebRequest -Uri 'https://get.videolan.org/vlc/3.0.21/win64/vlc-3.0.21-win64.7z' -OutFile $archive
+          Invoke-WebRequest -Uri 'https://download.videolan.org/pub/videolan/vlc/3.0.21/win64/vlc-3.0.21-win64.7z' -OutFile $archive
           & (Join-Path $env:ProgramFiles '7-Zip\7z.exe') x $archive "-o$extract" -y
           if ($LASTEXITCODE -ne 0) { throw "VLC archive extraction failed." }
           $vlcRoot = Get-ChildItem $extract -Directory | Select-Object -First 1
