@@ -48,7 +48,7 @@ except Exception:
 # إعدادات البرنامج
 # =========================================================
 
-APP_VERSION = "2.5.1 Queue UI Fix"
+APP_VERSION = "2.5.2 Download Validation & Fixed Controls"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 YTDLP_PATH = r"C:\SmartVideo\yt-dlp-source"
@@ -356,6 +356,24 @@ class VideoDownloader:
             font=("Arial", 8),
             anchor="e"
         ).pack(fill="x", pady=(4, 0))
+
+        # شريط ثابت لأزرار قائمة التحميلات؛ يظل ظاهراً مهما كان موضع تمرير المحتوى.
+        self.queue_action_bar = tk.Frame(
+            self.root,
+            bg="#202735",
+            padx=8,
+            pady=6
+        )
+        self.queue_action_bar.pack(side="bottom", fill="x")
+
+        self.button(self.queue_action_bar, "إضافة الرابط الحالي", self.add_to_queue, "#2878d0", 16).pack(side="right", padx=2)
+        self.button(self.queue_action_bar, "حذف المحدد", self.remove_queue_item, "#a34b4b", 11).pack(side="right", padx=2)
+        self.button(self.queue_action_bar, "لأعلى", lambda: self.move_queue_item(-1), "#495365", 7).pack(side="right", padx=2)
+        self.button(self.queue_action_bar, "لأسفل", lambda: self.move_queue_item(1), "#495365", 7).pack(side="right", padx=2)
+        self.button(self.queue_action_bar, "مسح القائمة", self.clear_queue, "#495365", 10).pack(side="right", padx=2)
+        self.button(self.queue_action_bar, "إضافة روابط متعددة", self.add_multiple_to_queue, "#495365", 16).pack(side="left", padx=2)
+        self.start_queue_button = self.button(self.queue_action_bar, "بدء تحميل قائمة الانتظار", self.start_queue_download, "#159b70", 22)
+        self.start_queue_button.pack(side="left", padx=2)
 
         # المحتوى الرئيسي داخل مساحة قابلة للتمرير.
         # هذا يمنع اختفاء أزرار قائمة الانتظار على الشاشات الأقصر.
@@ -835,18 +853,6 @@ class VideoDownloader:
         self.queue_tree.column("title", width=560, anchor="e")
         self.queue_tree.column("status", width=105, anchor="center", stretch=False)
         self.queue_tree.pack(fill="both", expand=True)
-
-        queue_actions = tk.Frame(queue_box, bg="#202735")
-        queue_actions.pack(fill="x", pady=(5, 0))
-
-        self.button(queue_actions, "إضافة الرابط الحالي", self.add_to_queue, "#2878d0", 16).pack(side="right", padx=2)
-        self.button(queue_actions, "حذف المحدد", self.remove_queue_item, "#a34b4b", 11).pack(side="right", padx=2)
-        self.button(queue_actions, "لأعلى", lambda: self.move_queue_item(-1), "#495365", 7).pack(side="right", padx=2)
-        self.button(queue_actions, "لأسفل", lambda: self.move_queue_item(1), "#495365", 7).pack(side="right", padx=2)
-        self.button(queue_actions, "مسح القائمة", self.clear_queue, "#495365", 10).pack(side="right", padx=2)
-        self.button(queue_actions, "إضافة روابط متعددة", self.add_multiple_to_queue, "#495365", 16).pack(side="left", padx=2)
-        self.start_queue_button = self.button(queue_actions, "بدء تحميل قائمة الانتظار", self.start_queue_download, "#159b70", 22)
-        self.start_queue_button.pack(side="left", padx=2)
 
         # مجلد الحفظ
         self.section(main, "مجلد الحفظ")
@@ -3880,13 +3886,13 @@ class VideoDownloader:
                             with module.YoutubeDL(retry_options) as ydl:
                                 info = ydl.extract_info(video_url, download=True)
                                 filename = self.resolve_filename(ydl, info)
-                        if not filename or not os.path.isfile(filename):
-                            filename = self.find_latest_file()
-                        if filename:
-                            self.messages.put(("queue_file_ok", (work_id, filename, video_title)))
-                        else:
-                            self.messages.put(("queue_item_status", (work_id, "مكتمل")))
-                            self.messages.put(("log", "اكتمل التنزيل لكن تعذر تحديد مسار الملف: " + str(video_title)))
+                        if not self.is_valid_download_file(filename):
+                            raise RuntimeError(
+                                "لم يتم العثور على ملف ناتج صالح بعد انتهاء yt-dlp؛ "
+                                "لن يتم تسجيل العنصر كمكتمل."
+                            )
+
+                        self.messages.put(("queue_file_ok", (work_id, filename, video_title)))
                         self.messages.put(("queue_item_success", work_id))
 
                     except Exception as item_error:
@@ -3903,42 +3909,60 @@ class VideoDownloader:
         finally:
             self.messages.put(("download_done", None))
 
+    def is_valid_download_file(self, path):
+        """الملف لا يُعد ناتجاً ناجحاً إلا إذا كان موجوداً وحجمه أكبر من صفر."""
+        try:
+            return bool(
+                path
+                and os.path.isfile(path)
+                and os.path.getsize(path) > 0
+            )
+        except (OSError, TypeError):
+            return False
+
     def resolve_filename(self, ydl, info):
 
-        if not info:
+        if not isinstance(info, dict) or not info:
             return ""
 
-        if info.get("_type") == "playlist":
+        candidates = []
 
-            entries = info.get("entries") or []
+        # المسارات النهائية التي يضعها yt-dlp بعد النقل والمعالجة.
+        for key in ("filepath", "_filename", "filename"):
+            value = info.get(key)
+            if value:
+                candidates.append(value)
 
-            for entry in reversed(entries):
-                if entry:
-                    info = entry
-                    break
+        # بعض مواقع التحميل تعيد مسار كل صيغة ضمن requested_downloads.
+        for requested in (info.get("requested_downloads") or []):
+            if isinstance(requested, dict):
+                for key in ("filepath", "_filename", "filename"):
+                    value = requested.get(key)
+                    if value:
+                        candidates.append(value)
 
+        # اسم الملف المتوقع من yt-dlp، مع مراعاة تحويل MP3.
         try:
-            filename = ydl.prepare_filename(info)
+            prepared = ydl.prepare_filename(info)
         except Exception:
-            filename = ""
+            prepared = ""
 
-        if self.type_var.get() == "MP3" and filename:
-            filename = (
-                os.path.splitext(filename)[0]
-                + ".mp3"
-            )
+        if prepared:
+            candidates.append(prepared)
+            if self.type_var.get() == "MP3":
+                candidates.append(os.path.splitext(prepared)[0] + ".mp3")
 
-        if filename and os.path.isfile(filename):
-            return filename
-
-        requested = info.get("requested_downloads") or []
-
-        for item in requested:
-
-            path = item.get("filepath")
-
-            if path and os.path.isfile(path):
-                return path
+        # إزالة التكرار مع الحفاظ على ترتيب أولوية المسارات.
+        seen = set()
+        for candidate in candidates:
+            if not candidate:
+                continue
+            candidate = os.path.abspath(os.path.expanduser(str(candidate)))
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if self.is_valid_download_file(candidate):
+                return candidate
 
         return ""
 
@@ -4036,7 +4060,7 @@ class VideoDownloader:
 
                 path = os.path.join(self.download_folder, name)
 
-                if os.path.isfile(path):
+                if self.is_valid_download_file(path):
 
                     modified = os.path.getmtime(path)
 
@@ -4376,7 +4400,7 @@ class VideoDownloader:
         self.eta_var.set("الوقت المتبقي: 00:00")
 
         if self.queue_error_count:
-            self.status_var.set("اكتملت قائمة الانتظار مع وجود ملفات فاشلة")
+            self.status_var.set("اكتمل بعض التحميلات مع وجود ملفات فاشلة")
             self.log("انتهت قائمة الانتظار مع {} إخفاق.".format(self.queue_error_count))
         else:
             self.status_var.set("اكتمل التحميل بنجاح")
