@@ -76,36 +76,19 @@ jobs:
             throw "VLC runtime was not staged in the expected folder."
           }
 
-      - name: Download and stage Windows 7-compatible FFmpeg essentials
+      - name: Download and stage Windows 7-compatible FFmpeg 4.4.1 from GitHub Release
         shell: pwsh
         run: |
-          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg-4.4.1-essentials_build.7z'
-          $extract = Join-Path $env:RUNNER_TEMP 'FFmpeg_Runtime'
-          $url = 'https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-4.4.1-essentials_build.7z'
-          $downloaded = $false
-          for ($attempt = 1; $attempt -le 5; $attempt++) {
-            try {
-              Write-Host "Downloading FFmpeg (attempt $attempt of 5)..."
-              Invoke-WebRequest -Uri $url -OutFile $archive -TimeoutSec 120
-              if ((Get-Item $archive).Length -lt 1000000) { throw "Downloaded FFmpeg archive is unexpectedly small." }
-              $downloaded = $true
-              break
-            } catch {
-              Write-Warning "FFmpeg download attempt $attempt failed: $_"
-              if ($attempt -lt 5) { Start-Sleep -Seconds (15 * $attempt) }
-            }
-          }
-          if (!$downloaded) { throw "Could not download the Windows 7-compatible FFmpeg archive after 5 attempts." }
-          & (Join-Path $env:ProgramFiles '7-Zip\7z.exe') x $archive "-o$extract" -y
-          if ($LASTEXITCODE -ne 0) { throw "FFmpeg archive extraction failed." }
-          $ffmpeg = Get-ChildItem $extract -Filter 'ffmpeg.exe' -Recurse -File | Select-Object -First 1
-          if (!$ffmpeg) { throw "ffmpeg.exe was not found in the downloaded archive." }
-          $ffmpegDir = Join-Path $env:GITHUB_WORKSPACE 'vendor\ffmpeg\bin'
+          $ffmpegDir = Join-Path $env:GITHUB_WORKSPACE 'vendor\\ffmpeg\\bin'
           New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null
-          Get-ChildItem -LiteralPath $ffmpeg.DirectoryName -Force | Copy-Item -Destination $ffmpegDir -Recurse -Force
-          if (!(Test-Path (Join-Path $ffmpegDir 'ffmpeg.exe'))) { throw "FFmpeg was not staged." }
-          & (Join-Path $ffmpegDir 'ffmpeg.exe') -version
-          if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg failed its startup check." }
+          $ffmpegPath = Join-Path $ffmpegDir 'ffmpeg.exe'
+          $url = 'https://github.com/hemdan100hamed-sketch/Smart-Video-Downloader/releases/download/ffmpeg-4.4.1-win64/ffmpeg.exe'
+          Invoke-WebRequest -Uri $url -OutFile $ffmpegPath -TimeoutSec 300
+          if (!(Test-Path $ffmpegPath)) { throw "FFmpeg download did not create ffmpeg.exe." }
+          $size = (Get-Item $ffmpegPath).Length
+          if ($size -ne 113721856) { throw "Unexpected FFmpeg size: $size bytes (expected 113721856)." }
+          & $ffmpegPath -version
+          if ($LASTEXITCODE -ne 0) { throw "Downloaded FFmpeg failed its startup check." }
 
       - name: Set up 64-bit Python 3.8
         uses: actions/setup-python@v5
