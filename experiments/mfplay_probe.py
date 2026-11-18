@@ -54,6 +54,8 @@ class MFPlayPlayer(object):
         ]
         create.restype = ctypes.c_long
 
+        # MFPlay loads media asynchronously. Tk's event loop must keep pumping
+        # Windows messages while playback initializes.
         hr = create(media_url, 1, 0, None, ctypes.c_void_p(video_hwnd),
                     ctypes.byref(self._player))
         if hr < 0 or not self._player:
@@ -94,22 +96,9 @@ class MFPlayPlayer(object):
 
     def set_volume(self, value):
         volume = max(0.0, min(1.0, float(value)))
-        self._check(self._call(20, ctypes.c_long, [ctypes.c_float],
-                               ctypes.c_float(volume)), "SetVolume")
-
-    def wait_for_state(self, expected, timeout=20):
-        deadline = time.time() + timeout
-        last_state = None
-        while time.time() < deadline:
-            last_state = self.state()
-            if last_state == expected:
-                return
-            time.sleep(0.2)
-        raise MFPlayError(
-            "Timed out waiting for %s; last state was %s" %
-            (STATE_NAMES.get(expected, expected),
-             STATE_NAMES.get(last_state, last_state))
-        )
+        # IMFPMediaPlayer::SetVolume takes a DOUBLE, not a FLOAT.
+        self._check(self._call(20, ctypes.c_long, [ctypes.c_double],
+                               ctypes.c_double(volume)), "SetVolume")
 
     def close(self):
         if self._player:
@@ -161,35 +150,85 @@ def main():
 
     root.update_idletasks()
     player = None
+    started_at = time.time()
+    phase = {"value": "wait_playing", "phase_started": started_at}
+    result = {"code": 1}
+
     try:
         player = MFPlayPlayer(media_url, video.winfo_id())
-        player.wait_for_state(2, timeout=25)
-        status.set("PASS: embedded playback started")
+        status.set("Waiting for MFPlay to load and start the video...")
 
-        player.set_volume(0.35)
-        player.pause()
-        player.wait_for_state(3, timeout=8)
-        status.set("PASS: embedded playback + pause")
+        def finish(code, message):
+            result["code"] = code
+            status.set(message)
+            print(message)
+            root.after(1200, root.destroy)
 
-        player.play()
-        player.wait_for_state(2, timeout=8)
-        player.stop()
-        player.wait_for_state(1, timeout=8)
-        status.set("PASS: embedded playback, pause, resume, volume and stop")
-        print(status.get())
-        root.update()
-        time.sleep(1)
-        return 0
+        def poll():
+            try:
+                current = player.state()
+                now = time.time()
+                current_name = STATE_NAMES.get(current, str(current))
+                status.set("MFPlay state: " + current_name +
+                           " | Test: " + phase["value"])
+
+                if now - started_at > 30:
+                    finish(1, "MFPLAY_TEST_FAILED: startup timed out; state=" +
+                           current_name)
+                    return
+
+                if phase["value"] == "wait_playing":
+                    if current == 2:
+                        player.set_volume(0.35)
+                        player.pause()
+                        phase["value"] = "wait_paused"
+                        phase["phase_started"] = now
+                    elif current in (1, 4):
+                        finish(1, "MFPLAY_TEST_FAILED: playback stopped before starting")
+                        return
+
+                elif phase["value"] == "wait_paused":
+                    if current == 3:
+                        player.play()
+                        phase["value"] = "wait_resumed"
+                        phase["phase_started"] = now
+
+                elif phase["value"] == "wait_resumed":
+                    if current == 2:
+                        player.stop()
+                        phase["value"] = "wait_stopped"
+                        phase["phase_started"] = now
+
+                elif phase["value"] == "wait_stopped":
+                    if current == 1:
+                        finish(0, "PASS: embedded playback, pause, resume, volume and stop")
+                        return
+
+                if now - phase["phase_started"] > 12:
+                    finish(1, "MFPLAY_TEST_FAILED: timeout during " +
+                           phase["value"] + "; state=" + current_name)
+                    return
+
+                root.after(200, poll)
+
+            except Exception as exc:
+                finish(1, "MFPLAY_TEST_FAILED: " + str(exc))
+
+        root.after(300, poll)
+        root.mainloop()
+
     except Exception as exc:
-        status.set("FAIL: " + str(exc))
         print("MFPLAY_TEST_FAILED: " + str(exc))
-        root.update()
-        time.sleep(2)
-        return 1
+        result["code"] = 1
     finally:
         if player is not None:
             player.close()
-        root.destroy()
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    return result["code"]
 
 
 if __name__ == "__main__":
