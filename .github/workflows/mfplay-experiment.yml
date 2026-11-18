@@ -1,0 +1,52 @@
+name: MFPlay replacement feasibility experiment
+
+on:
+  push:
+    branches:
+      - experiment/media-foundation-player
+    paths:
+      - experiments/**
+      - .github/workflows/mfplay-experiment.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mfplay-smoke-test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out isolated MFPlay experiment
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/media-foundation-player
+
+      - name: Set up Python 3.8 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+          architecture: 'x64'
+
+      - name: Download a small MP4 test clip
+        shell: pwsh
+        run: |
+          $video = Join-Path $env:RUNNER_TEMP 'mfplay-test.mp4'
+          Invoke-WebRequest -Uri 'https://download.samplelib.com/mp4/sample-5s.mp4' -OutFile $video -TimeoutSec 120
+          if (!(Test-Path $video) -or (Get-Item $video).Length -lt 10000) {
+            throw "The MFPlay test clip could not be downloaded or is unexpectedly small."
+          }
+          "MFPLAY_TEST_VIDEO=$video" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host ("Downloaded test clip: {0:N2} MiB" -f ((Get-Item $video).Length / 1MB))
+
+      - name: Test local MP4 playback and controls inside Tkinter
+        shell: pwsh
+        run: |
+          python experiments\mfplay_probe.py "$env:MFPLAY_TEST_VIDEO"
+          if ($LASTEXITCODE -ne 0) { throw "MFPlay local-file test failed." }
+
+      - name: Test direct HTTP MP4 playback inside Tkinter
+        shell: pwsh
+        run: |
+          python experiments\mfplay_probe.py 'https://download.samplelib.com/mp4/sample-5s.mp4'
+          if ($LASTEXITCODE -ne 0) { throw "MFPlay direct-HTTP test failed." }
