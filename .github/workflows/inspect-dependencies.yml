@@ -71,7 +71,7 @@ jobs:
           }
           $vlcTarget = Join-Path $env:GITHUB_WORKSPACE 'vendor\vlc'
           New-Item -ItemType Directory -Force -Path $vlcTarget | Out-Null
-          Copy-Item (Join-Path $vlcRoot.FullName '*') $vlcTarget -Recurse -Force
+          Get-ChildItem -LiteralPath $vlcRoot.FullName -Force | Copy-Item -Destination $vlcTarget -Recurse -Force
           if (!(Test-Path (Join-Path $vlcTarget 'libvlc.dll')) -or !(Test-Path (Join-Path $vlcTarget 'plugins'))) {
             throw "VLC runtime was not staged in the expected folder."
           }
