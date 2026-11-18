@@ -1,0 +1,76 @@
+name: Inspect dependency archive
+
+on:
+  push:
+    branches:
+      - build/windows7-11-packaging
+    paths:
+      - SmartVideo_Dependencies.rar
+      - .github/workflows/inspect-dependencies.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: windows-latest
+    steps:
+      - name: Check out packaging branch
+        uses: actions/checkout@v4
+        with:
+          ref: build/windows7-11-packaging
+
+      - name: Install 7-Zip
+        shell: pwsh
+        run: |
+          choco install 7zip -y --no-progress
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+          if (!(Test-Path $sevenZip)) { throw "7-Zip executable was not found." }
+          & $sevenZip l "$env:GITHUB_WORKSPACE\SmartVideo_Dependencies.rar"
+          if ($LASTEXITCODE -ne 0) { throw "Could not read the RAR archive." }
+
+      - name: Extract and inspect dependency structure
+        shell: pwsh
+        run: |
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'SmartVideo_Dependencies.rar'
+          $target = Join-Path $env:RUNNER_TEMP 'SmartVideo_Dependency_Audit'
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          & $sevenZip x $archive "-o$target" -y
+          if ($LASTEXITCODE -ne 0) { throw "Archive extraction failed." }
+
+          Write-Host "=== Extracted file inventory (first 500 entries) ==="
+          Get-ChildItem -LiteralPath $target -Recurse -File |
+            Select-Object -First 500 FullName, Length |
+            Format-Table -AutoSize | Out-String | Write-Host
+
+          $ytdlp = Get-ChildItem -LiteralPath $target -Recurse -File -Filter '__init__.py' |
+            Where-Object { $_.Directory.Name -eq 'yt_dlp' }
+          $curl = Get-ChildItem -LiteralPath $target -Recurse -Directory |
+            Where-Object { $_.Name -eq 'curlcffi' }
+          $curlInit = Get-ChildItem -LiteralPath $target -Recurse -File -Filter '__init__.py' |
+            Where-Object { $_.Directory.Name -eq 'curl_cffi' }
+
+          Write-Host "yt-dlp package candidates:"
+          $ytdlp | Select-Object -ExpandProperty FullName
+          Write-Host "curl_cffi package candidates:"
+          $curlInit | Select-Object -ExpandProperty FullName
+          Write-Host "curlcffi directory candidates:"
+          $curl | Select-Object -ExpandProperty FullName
+
+          if (!$ytdlp) { Write-Warning "Expected yt_dlp package was not found." }
+          if (!$curlInit -and !$curl) { Write-Warning "Expected curl_cffi package was not found." }
+
+          $inventory = Get-ChildItem -LiteralPath $target -Recurse -File |
+            ForEach-Object { [PSCustomObject]@{ RelativePath = $_.FullName.Substring($target.Length + 1); Bytes = $_.Length } }
+          $inventory | Export-Csv -NoTypeInformation -Encoding UTF8 (Join-Path $env:GITHUB_WORKSPACE 'dependency-archive-inventory.csv')
+          "yt_dlp_found=$([bool]$ytdlp)" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "curl_cffi_found=$([bool]($curlInit -or $curl))" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload dependency inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-archive-inventory
+          path: dependency-archive-inventory.csv
+          if-no-files-found: error
