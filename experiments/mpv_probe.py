@@ -32,9 +32,10 @@ def main():
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(dll_dir)
     os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
-    dll_path = os.path.join(dll_dir, "libmpv-2.dll")
+    dll_name = os.environ.get("MPV_DLL_NAME", "libmpv-2.dll")
+    dll_path = os.path.join(dll_dir, dll_name)
     if not os.path.isfile(dll_path):
-        fail("libmpv-2.dll was not found in " + dll_dir)
+        fail(dll_name + " was not found in " + dll_dir)
 
     mpv = ctypes.WinDLL(dll_path)
     mpv.mpv_create.restype = c_void_p
