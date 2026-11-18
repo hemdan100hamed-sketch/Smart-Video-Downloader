@@ -1,0 +1,98 @@
+name: MPV Windows 7 compatibility experiment
+
+on:
+  push:
+    branches:
+      - experiment/mpv-player
+    paths:
+      - '.github/workflows/mpv-win7-compat.yml'
+      - 'experiments/mpv_probe.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mpv-win7-era-build:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Check out isolated MPV experiment
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/mpv-player
+
+      - name: Set up Python 3.8 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+          architecture: x64
+
+      - name: Download MPV 0.36-era libmpv development package
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'mpv-dev-20230806.7z'
+          $url = 'https://sourceforge.net/projects/mpv-player-windows/files/libmpv/mpv-dev-x86_64-20230806-git-6729285.7z/download'
+          Invoke-WebRequest -Uri $url -OutFile $archive -TimeoutSec 240
+          if (!(Test-Path $archive) -or (Get-Item $archive).Length -lt 1000000) {
+            throw 'MPV development archive download failed or is too small.'
+          }
+          Write-Host ("Downloaded archive: {0:N2} MiB" -f ((Get-Item $archive).Length / 1MB))
+          $extract = Join-Path $env:RUNNER_TEMP 'mpv-dev-extracted'
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+          & 7z.exe x $archive "-o$extract" -y
+          if ($LASTEXITCODE -ne 0) { throw '7-Zip extraction failed.' }
+
+          $target = Join-Path $env:GITHUB_WORKSPACE 'vendor\mpv-win7-candidate'
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          $dlls = Get-ChildItem -Path $extract -Filter '*.dll' -Recurse
+          if (!$dlls -or $dlls.Count -eq 0) { throw 'No DLLs were found in the MPV development archive.' }
+
+          $foundMpv = $false
+          foreach ($dll in $dlls) {
+            $name = $dll.Name
+            if ($name -ieq 'mpv-2.dll') {
+              $name = 'libmpv-2.dll'
+              $foundMpv = $true
+            }
+            if ($name -ieq 'libmpv-2.dll') { $foundMpv = $true }
+            Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $target $name) -Force
+          }
+          if (!$foundMpv -or !(Test-Path (Join-Path $target 'libmpv-2.dll'))) {
+            Write-Host 'Archive contents:'
+            Get-ChildItem $extract -Recurse -File | Select-Object FullName,Length | Format-Table -AutoSize
+            throw 'The MPV 0.36-era archive does not contain the expected libmpv DLL.'
+          }
+
+          $total = (Get-ChildItem $target -File | Measure-Object Length -Sum).Sum
+          "MPV_DLL_DIR=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host ("Extracted MPV DLL payload: {0:N2} MiB" -f ($total / 1MB))
+          Get-ChildItem $target -File | Select-Object Name,Length | Format-Table -AutoSize
+
+      - name: Download local MP4 test clip
+        shell: pwsh
+        run: |
+          $video = Join-Path $env:RUNNER_TEMP 'mpv-win7-test.mp4'
+          Invoke-WebRequest -Uri 'https://download.samplelib.com/mp4/sample-5s.mp4' -OutFile $video -TimeoutSec 120
+          if (!(Test-Path $video) -or (Get-Item $video).Length -lt 10000) {
+            throw 'Test clip download failed or file is too small.'
+          }
+          "MPV_TEST_VIDEO=$video" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Test embedded local playback with older libmpv
+        shell: pwsh
+        run: |
+          python experiments\mpv_probe.py --local "$env:MPV_TEST_VIDEO"
+          if ($LASTEXITCODE -ne 0) { throw 'Older MPV local embedded playback test failed.' }
+
+      - name: Test HTTPS streaming with older libmpv
+        shell: pwsh
+        run: |
+          python experiments\mpv_probe.py --network "https://download.samplelib.com/mp4/sample-5s.mp4"
+          if ($LASTEXITCODE -ne 0) { throw 'Older MPV HTTPS streaming test failed.' }
+
+      - name: Test HLS streaming with older libmpv
+        shell: pwsh
+        run: |
+          python experiments\mpv_probe.py --network "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+          if ($LASTEXITCODE -ne 0) { throw 'Older MPV HLS streaming test failed.' }
