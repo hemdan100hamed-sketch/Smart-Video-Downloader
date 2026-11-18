@@ -69,8 +69,10 @@ jobs:
           if (!$vlcRoot -or !(Test-Path (Join-Path $vlcRoot.FullName 'libvlc.dll')) -or !(Test-Path (Join-Path $vlcRoot.FullName 'plugins'))) {
             throw "VLC native runtime is incomplete (libvlc.dll/plugins missing)."
           }
-          Copy-Item $vlcRoot.FullName (Join-Path $env:GITHUB_WORKSPACE 'vendor\vlc') -Recurse -Force
-          if (!(Test-Path (Join-Path $env:GITHUB_WORKSPACE 'vendor\vlc\libvlc.dll'))) {
+          $vlcTarget = Join-Path $env:GITHUB_WORKSPACE 'vendor\vlc'
+          New-Item -ItemType Directory -Force -Path $vlcTarget | Out-Null
+          Copy-Item (Join-Path $vlcRoot.FullName '*') $vlcTarget -Recurse -Force
+          if (!(Test-Path (Join-Path $vlcTarget 'libvlc.dll')) -or !(Test-Path (Join-Path $vlcTarget 'plugins'))) {
             throw "VLC runtime was not staged in the expected folder."
           }
 
