@@ -1,4 +1,4 @@
-name: Inspect dependency archive
+name: Inspect dependencies and build portable app
 
 on:
   push:
@@ -7,13 +7,15 @@ on:
     paths:
       - SmartVideo_Dependencies.rar
       - .github/workflows/inspect-dependencies.yml
+      - packaging/**
+      - Smart_Video_Downloader_2.5.3_Custom_File_Names.py
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  inspect:
+  build:
     runs-on: windows-latest
     steps:
       - name: Check out packaging branch
@@ -27,10 +29,10 @@ jobs:
           choco install 7zip -y --no-progress
           $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
           if (!(Test-Path $sevenZip)) { throw "7-Zip executable was not found." }
-          & $sevenZip l "$env:GITHUB_WORKSPACE\SmartVideo_Dependencies.rar"
-          if ($LASTEXITCODE -ne 0) { throw "Could not read the RAR archive." }
+          & $sevenZip t "$env:GITHUB_WORKSPACE\SmartVideo_Dependencies.rar"
+          if ($LASTEXITCODE -ne 0) { throw "RAR archive integrity test failed." }
 
-      - name: Extract and inspect dependency structure
+      - name: Extract and stage exact vendor folder layout
         shell: pwsh
         run: |
           $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
@@ -40,37 +42,68 @@ jobs:
           & $sevenZip x $archive "-o$target" -y
           if ($LASTEXITCODE -ne 0) { throw "Archive extraction failed." }
 
-          Write-Host "=== Extracted file inventory (first 500 entries) ==="
-          Get-ChildItem -LiteralPath $target -Recurse -File |
-            Select-Object -First 500 FullName, Length |
-            Format-Table -AutoSize | Out-String | Write-Host
+          $dependencyRoot = Join-Path $target 'SmartVideo_Dependencies'
+          $ytdlpSource = Join-Path $dependencyRoot 'yt_dlp'
+          $curlSource = Join-Path $dependencyRoot 'curlcffi-test\installed'
+          if (!(Test-Path (Join-Path $ytdlpSource '__init__.py'))) {
+            throw "yt_dlp package not found in the expected archive layout."
+          }
+          if (!(Test-Path (Join-Path $curlSource 'curl_cffi\__init__.py'))) {
+            throw "curl_cffi package not found in the expected archive layout."
+          }
+          if (!(Test-Path (Join-Path $curlSource '_cffi_backend.cp38-win_amd64.pyd'))) {
+            throw "CPython 3.8 x64 _cffi_backend extension is missing."
+          }
+          $curlDll = Get-ChildItem (Join-Path $curlSource 'curl_cffi.libs') -Filter 'libcurl*.dll' -File
+          if (!$curlDll) { throw "curl_cffi libcurl DLL is missing." }
 
-          $ytdlp = Get-ChildItem -LiteralPath $target -Recurse -File -Filter '__init__.py' |
-            Where-Object { $_.Directory.Name -eq 'yt_dlp' }
-          $curl = Get-ChildItem -LiteralPath $target -Recurse -Directory |
-            Where-Object { $_.Name -eq 'curlcffi' }
-          $curlInit = Get-ChildItem -LiteralPath $target -Recurse -File -Filter '__init__.py' |
-            Where-Object { $_.Directory.Name -eq 'curl_cffi' }
+          $vendorYtdlp = Join-Path $env:GITHUB_WORKSPACE 'vendor\yt-dlp-source'
+          $vendorCurl = Join-Path $env:GITHUB_WORKSPACE 'vendor\curlcffi'
+          New-Item -ItemType Directory -Force -Path $vendorYtdlp,$vendorCurl | Out-Null
+          Copy-Item $ytdlpSource (Join-Path $vendorYtdlp 'yt_dlp') -Recurse -Force
+          Copy-Item (Join-Path $curlSource '*') $vendorCurl -Recurse -Force
 
-          Write-Host "yt-dlp package candidates:"
-          $ytdlp | Select-Object -ExpandProperty FullName
-          Write-Host "curl_cffi package candidates:"
-          $curlInit | Select-Object -ExpandProperty FullName
-          Write-Host "curlcffi directory candidates:"
-          $curl | Select-Object -ExpandProperty FullName
+          Write-Host "yt_dlp staged: $(Test-Path (Join-Path $vendorYtdlp 'yt_dlp\__init__.py'))"
+          Write-Host "curl_cffi staged: $(Test-Path (Join-Path $vendorCurl 'curl_cffi\__init__.py'))"
+          Write-Host "libcurl DLL: $($curlDll.FullName)"
 
-          if (!$ytdlp) { Write-Warning "Expected yt_dlp package was not found." }
-          if (!$curlInit -and !$curl) { Write-Warning "Expected curl_cffi package was not found." }
+      - name: Set up 64-bit Python 3.8
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+          architecture: 'x64'
 
-          $inventory = Get-ChildItem -LiteralPath $target -Recurse -File |
-            ForEach-Object { [PSCustomObject]@{ RelativePath = $_.FullName.Substring($target.Length + 1); Bytes = $_.Length } }
-          $inventory | Export-Csv -NoTypeInformation -Encoding UTF8 (Join-Path $env:GITHUB_WORKSPACE 'dependency-archive-inventory.csv')
-          "yt_dlp_found=$([bool]$ytdlp)" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
-          "curl_cffi_found=$([bool]($curlInit -or $curl))" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+      - name: Prepare application source and verify dependency imports
+        shell: pwsh
+        run: |
+          python packaging\prepare_windows_build.py
+          if ($LASTEXITCODE -ne 0) { throw "Application source preparation failed." }
+          python -m py_compile build\Smart_Video_Downloader_2.5.3_Windows.py
+          if ($LASTEXITCODE -ne 0) { throw "Prepared application source has a syntax error." }
+          $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\vendor\yt-dlp-source;$env:GITHUB_WORKSPACE\vendor\curlcffi"
+          python -c "import yt_dlp, curl_cffi; print('yt_dlp:', yt_dlp.version.__version__); print('curl_cffi:', curl_cffi.__version__)"
+          if ($LASTEXITCODE -ne 0) { throw "A required dependency failed to import on Python 3.8 x64." }
 
-      - name: Upload dependency inventory
+      - name: Install PyInstaller
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade "pip<25"
+          if ($LASTEXITCODE -ne 0) { throw "pip setup failed." }
+          python -m pip install -r packaging\requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller installation failed." }
+
+      - name: Build portable onedir application
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean packaging\SmartVideoDownloader.spec
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
+          if (!(Test-Path 'dist\SmartVideoDownloader\SmartVideoDownloader.exe')) {
+            throw "Expected portable application EXE was not created."
+          }
+
+      - name: Upload portable application
         uses: actions/upload-artifact@v4
         with:
-          name: dependency-archive-inventory
-          path: dependency-archive-inventory.csv
+          name: SmartVideoDownloader-2.5.3-Windows-Portable
+          path: dist/SmartVideoDownloader/
           if-no-files-found: error
